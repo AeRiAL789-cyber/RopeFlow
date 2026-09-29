@@ -1,0 +1,23 @@
+{
+  "name": "ropeflow",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Web-based rope rigging design, rescue planning, and force calculation. Web-native successor to vRigger.",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "zustand": "^4.5.4"
+  },
+  "devDependencies": {
+    "@types/node": "^20.14.0",
+    "typescript": "^5.5.4",
+    "vite": "^5.3.5",
+    "vitest": "^2.0.5"
+  }
+}

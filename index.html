@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>RopeFlow — rope rigging & rescue force calculator</title>
+  </head>
+  <body>
+    <div id="app">
+      <div id="hud" class="hud">
+        <h1>RopeFlow <span class="tag">v0.1 engine</span></h1>
+        <div class="controls">
+          <button id="btn-add-anchor">Anchor</button>
+          <button id="btn-add-pulley">Pulley</button>
+          <button id="btn-add-carabiner">Carabiner</button>
+          <button id="btn-add-load">Load</button>
+          <button id="btn-add-belay">Belay</button>
+          <button id="btn-run">Run path</button>
+          <button id="btn-demo">Demo rig</button>
+        </div>
+        <div id="hud-stats" class="stats"></div>
+        <div id="hud-report" class="report"></div>
+      </div>
+      <canvas id="stage"></canvas>
+    </div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
