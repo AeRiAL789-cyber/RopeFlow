@@ -10,7 +10,8 @@
 //
 // Units: kN throughout. Angles in radians.
 
-import type { RigDocument, RigNode, NodeKind } from '../model/types';
+import type { RigDocument, RigNode, NodeKind, KnotKind } from '../model/types';
+import { knotById, worstKnotDerate, DEFAULT_SAFETY_FACTOR } from '../gear/catalog';
 
 export interface SegmentForce {
   /** Index of this segment within its path. */
@@ -51,6 +52,29 @@ export interface SolveResult {
   warnings: string[];
   /** The force required at the haul end for each path, kN. */
   haulForce: Record<number, number>;
+  /** Per-ROPE results: effective strength after knot SWL derating, peak tension, MA. */
+  ropes: RopeResult[];
+}
+
+/** Per-ROPE analysis — strength after knot derating + maximum carried tension. */
+export interface RopeResult {
+  ropeId: string;
+  name: string;
+  /** Nominal rope strength (no knots), kN. */
+  nominal: number;
+  /** Nominal × worst knot SWL derating — the rope's safe effective strength, kN. */
+  effective: number;
+  /** The weakest knot governing `effective` (null when no knots). */
+  worstKnot: KnotKind | null;
+  /** Peak tension carried along the rope after friction propagation, kN. */
+  peakTension: number;
+  /** Effective ÷ safety factor — the rope's allowable working load, kN. */
+  rated: number;
+  /** peakTension / rated. */
+  utilisation: number;
+  /** Required haul force after any mechanical advantage, kN. */
+  haulForce: number;
+  status: 'OK' | 'WARN' | 'OVERLOAD';
 }
 
 const CRITICAL_ANGLE = (120 * Math.PI) / 180; // 120° in radians
@@ -390,10 +414,81 @@ export function solveRig(rig: RigDocument): SolveResult {
     };
   });
 
-  return { segments, nodes: nodesOut, warnings, haulForce };
+  return {
+    segments,
+    nodes: nodesOut,
+    warnings,
+    haulForce,
+    ropes: solveRopes(rig, nodesOut),
+  };
 }
 
-/** Convenience: maximum resultant across all nodes. */
+/**
+ * Per-ROPE analysis. A rope's effective strength = its nominal rating × the
+ * WORST knot SWL derating along its route (the weakest knot governs). Peak
+ * tension is read from the already-computed per-node working loads on the
+ * rope's route. A rope run through a pulley/BELAY *for advantage* divides the
+ * required haul force by that event's mechanical advantage (2 → 2:1).
+ *
+ * When the rig has no explicit ropes (pure node/edge sketching), reports an
+ * empty list — nothing to analyse.
+ */
+function solveRopes(
+  rig: RigDocument,
+  nodesOut: NodeForce[],
+): RopeResult[] {
+  const ropes = rig.ropes;
+  if (!ropes || ropes.length === 0) return [];
+  const nodeWorking = new Map(nodesOut.map((n) => [n.nodeId, n.working]));
+
+  return ropes.map((rope) => {
+    // 1. Effective strength = rating × worst knot derating.
+    const knots: KnotKind[] = [];
+    let maProduct = 1; // mechanical advantage from run-through pulley/belay events
+    for (const ev of rope.events) {
+      if (ev.knot) knots.push(ev.knot.kind);
+      if (ev.ma && ev.ma > 1) maProduct *= ev.ma;
+    }
+    const derate = worstKnotDerate(knots);
+    const effective = rope.rating * derate;
+    const worstKnot: KnotKind | null =
+      knots.length
+        ? knots.reduce((a, b) => {
+            const ta = knotById(a)?.swl ?? 1;
+            const tb = knotById(b)?.swl ?? 1;
+            return ta <= tb ? a : b;
+          })
+        : null;
+
+    // 2. Peak tension along the route (already capstan-inflated by the solver).
+    const tensions = rope.path.map((id) => nodeWorking.get(id) ?? 0);
+    const peakTension = Math.max(0, ...tensions);
+
+    // 3. Rated allowable vs peak; MA reduces the haul force.
+    const sf = DEFAULT_SAFETY_FACTOR;
+    const rated = effective / sf;
+    const utilisation = rated > 0 ? peakTension / rated : 0;
+    const haulForce = Math.max(peakTension, ...tensions) / maProduct;
+
+    let status: 'OK' | 'WARN' | 'OVERLOAD';
+    if (utilisation > 1) status = 'OVERLOAD';
+    else if (utilisation > 0.8) status = 'WARN';
+    else status = 'OK';
+
+    return {
+      ropeId: rope.id,
+      name: rope.name,
+      nominal: rope.rating,
+      effective,
+      worstKnot,
+      peakTension,
+      rated,
+      utilisation,
+      haulForce,
+      status,
+    };
+  });
+}
 export function maxNodeForce(res: SolveResult): number {
   return res.nodes.reduce((m, n) => Math.max(m, n.resultant), 0);
 }

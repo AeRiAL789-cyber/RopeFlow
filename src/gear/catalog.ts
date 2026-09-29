@@ -6,7 +6,7 @@
 // manufacturer's published ratings before use on a live job (labelling unsafe
 // assumptions, not hard engineering data).
 
-import type { NodeKind, NodeSpec } from '../model/types';
+import type { NodeKind, NodeSpec, KnotTemplate, KnotKind } from '../model/types';
 
 export interface GearTemplate {
   id: string;
@@ -18,6 +18,38 @@ export interface GearTemplate {
 }
 
 export const DEFAULT_SAFETY_FACTOR = 5;
+
+/**
+ * Knot library. Each knot has an SWL DERATING multiplier applied to the rope's
+ * nominal rating → the rope's EFFECTIVE strength. Indicative values — a knot
+ * typically reduces rope strength to roughly 60–77% of nominal depending on
+ * type; MUST be verified against the rope + knot manufacturer's data before
+ * live use (labelled unsafe assumptions, not hard engineering data).
+ */
+export const KNOT_CATALOG: KnotTemplate[] = [
+  { kind: 'FIG8', name: 'Figure-eight', swl: 0.70, placement: 'termination', note: 'Standard end/loop knot.' },
+  { kind: 'FIG8_BIGHT', name: 'Figure-eight on a bight', swl: 0.72, placement: 'termination', note: 'Loop knot; slightly stronger.' },
+  { kind: 'BARREL', name: 'Barrel knot', swl: 0.60, placement: 'termination', note: 'End knot; heavy derating.' },
+  { kind: 'BOWLINE', name: 'Bowline', swl: 0.65, placement: 'both', note: 'Loop knot; watch torque under load.' },
+  { kind: 'CLOVE', name: 'Clove hitch', swl: 0.60, placement: 'termination', note: 'Attach to a spar/object.' },
+  { kind: 'BUTTERFLY', name: 'Alpine butterfly', swl: 0.75, placement: 'inline', note: 'In-line midline knot.' },
+  { kind: 'PRUSIK', name: 'Prusik', swl: 0.65, friction: 0.25, placement: 'inline', note: 'Friction hitch — grips under load.' },
+  { kind: 'MUNTER', name: 'Münter hitch', swl: 0.65, friction: 0.40, placement: 'inline', note: 'Friction hitch / belay knot.' },
+  { kind: 'OVERHAND', name: 'Overhand / stopper', swl: 0.60, placement: 'both', note: 'Stopper knot.' },
+];
+
+export function knotById(kind: KnotKind): KnotTemplate | undefined {
+  return KNOT_CATALOG.find((k) => k.kind === kind);
+}
+
+/** Worst (lowest) SWL derating across a set of knots on a rope — the weakest knot governs. */
+export function worstKnotDerate(knots: readonly KnotKind[]): number {
+  if (!knots.length) return 1;
+  return knots.reduce((worst, k) => {
+    const t = knotById(k);
+    return Math.min(worst, t?.swl ?? 1);
+  }, 1);
+}
 
 export const GEAR_CATALOG: GearTemplate[] = [
   {

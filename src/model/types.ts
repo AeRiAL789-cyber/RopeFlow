@@ -59,6 +59,83 @@ export interface RigEdge {
   color?: string;
 }
 
+// ---------------------------------------------------------------------------
+// Rope model — a rope is a ROUTE WITH ATTRIBUTES, not a bare segment.
+//
+// A single physical rope travels an ordered `path` of nodes (reusing the
+// existing path topology) and carries an ordered list of `events` describing
+// what it does at each station: terminate through a knot into an anchor/load,
+// run THROUGH a device (carabiner/pulley/belay — friction, and pulley gives
+// mechanical advantage), or run OVER an edge (capstan friction). Each knot
+// derates the rope's safe working load. Effective strength = nominal rating
+// × the worst knot's SWL derating along the route.
+// ---------------------------------------------------------------------------
+
+/** Knots RopeFlow understands, each with its own SWL derating on the rope. */
+export type KnotKind =
+  | 'FIG8'         // figure-8 end knot
+  | 'FIG8_BIGHT'   // figure-8 on a bight (loop)
+  | 'BARREL'       // barrel / identity end knot
+  | 'BOWLINE'      // bowline loop knot
+  | 'CLOVE'        // clove hitch (attach to a spar / object)
+  | 'BUTTERFLY'    // alpine butterfly — in-line midline knot
+  | 'PRUSIK'       // prusik friction hitch — grips under load
+  | 'MUNTER'       // munter hitch — rappel / belay friction hitch
+  | 'OVERHAND';    // overhand / bight stopper
+
+export interface KnotTemplate {
+  kind: KnotKind;
+  name: string;
+  /**
+   * Safe-working-load derating (0..1). Effective rope strength multiplies by
+   * this: a FIG8 at 0.70 knocks a 30 kN rope to ~21 kN effective. Indicative —
+   * verify against rope + knot manufacturer data before live use.
+   */
+  swl: number;
+  /** Extra rope friction a friction-hitch introduces (capstan mu). */
+  friction?: number;
+  /** Where the knot is valid: rope-end (termination) vs mid-rope (inline). */
+  placement: 'termination' | 'inline' | 'both';
+  note: string;
+}
+
+/** A specific knot placed on a rope. */
+export interface RopeKnot {
+  kind: KnotKind;
+  /** Node this knot is tied to / around (anchor, load, carabiner, spar). */
+  atNodeId?: string;
+}
+
+export type RopeEventType = 'terminate' | 'run-through' | 'run-over' | 'knot-inline';
+
+export interface RopeEvent {
+  type: RopeEventType;
+  /** Node involved, if any. */
+  nodeId?: string;
+  /** Knot for terminate / knot-inline events. */
+  knot?: RopeKnot;
+  /**
+   * Mechanical advantage when the rope runs a pulley/belay FOR advantage
+   * (e.g. 2 = 2:1). Divide the required haul force by this. Indicative —
+   * real block-and-tackle MA depends on number of moving sheaves and
+   * redirects; flagged as a planning approximation.
+   */
+  ma?: number;
+}
+
+export interface Rope {
+  id: string;
+  name: string;
+  /** Rope colour (hex) for the renderer. */
+  color?: string;
+  /** Nominal rope breaking strength, kN (the whole rope, no knots). */
+  rating: number;
+  /** Ordered node route this rope travels (reuses path topology). */
+  path: string[];
+  /** Ordered attributes / stations along the route. */
+  events: RopeEvent[];
+}
+
 /** Optional ordered rope path: an explicit sequence of node ids a single rope travels. */
 export interface RigPathNode {
   nodeId: string;
@@ -76,10 +153,12 @@ export interface RigDocument {
   nodes: RigNode[];
   edges: RigEdge[];
   paths: RigPathNode[][];
+  /** Optional high-level rope routes with attributes (knots, terminations, MA). */
+  ropes?: Rope[];
 }
 
 export function createEmptyRig(): RigDocument {
-  return { version: '0.1', units: 'kN', nodes: [], edges: [], paths: [] };
+  return { version: '0.1', units: 'kN', nodes: [], edges: [], paths: [], ropes: [] };
 }
 
 let _gid = 0;
