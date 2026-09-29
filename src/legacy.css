@@ -31,3 +31,34 @@ html, body { margin: 0; height: 100%; font-family: system-ui, -apple-system, Seg
 .report .row.OVERLOAD .val { color: #f85149; }
 .report .warn { color: #ffa657; margin-top: 6px; }
 .report .ok-note { color: #3fb950; margin-top: 6px; }
+
+/* Visio-style properties panel (right side) */
+.props-panel {
+  position: absolute; top: 12px; right: 12px; z-index: 5; width: 280px;
+  background: rgba(13, 17, 23, 0.92); border: 1px solid #30363d; border-radius: 10px;
+  padding: 12px 14px; backdrop-filter: blur(6px);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
+  color: #e6edf3; font-size: 12px;
+}
+.props-title { font-weight: 600; font-size: 13px; margin-bottom: 10px; color: #e6edf3; }
+.props-body { line-height: 1.6; }
+.props-empty { color: #8b949e; }
+.props-row { display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px; }
+.props-row label { color: #8b949e; }
+.props-row input[type="text"], .props-row input[type="number"] {
+  width: 130px; padding: 3px 6px; border-radius: 6px;
+  border: 1px solid #30363d; background: #21262d; color: #e6edf3; font-size: 12px;
+}
+.props-color {
+  display: inline-flex; padding: 0; width: 26px; height: 26px; border-radius: 6px;
+  border: 1px solid #30363d; background: #21262d; cursor: pointer; overflow: hidden;
+}
+.props-color input[type="color"] { width: 26px; height: 26px; border: none; background: none; cursor: pointer; }
+.props-swatches { display: flex; gap: 5px; flex-wrap: wrap; margin-top: 4px; }
+.props-swatch {
+  width: 18px; height: 18px; border-radius: 4px; cursor: pointer;
+  border: 1px solid rgba(255,255,255,0.2);
+}
+.props-kv { display: flex; justify-content: space-between; font-size: 11px; color: #8b949e; padding: 2px 0; }
+.props-kv b { color: #e6edf3; }
+.props-hint { font-size: 10px; color: #6e7681; margin-top: 8px; line-height: 1.4; }

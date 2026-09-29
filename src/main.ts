@@ -163,7 +163,7 @@ canvas.addEventListener('pointerdown', (e) => {
     return;
   }
 
-  // SELECT tool: drag a node, otherwise draft a connector between two nodes.
+  // SELECT tool: drag a node, or click a rope to select/recolour it.
   const hit = hitTest(p);
   if (hit) {
     dragging = hit;
@@ -171,7 +171,12 @@ canvas.addEventListener('pointerdown', (e) => {
     s.select(hit);
     canvas.setPointerCapture(e.pointerId);
   } else {
-    s.clearSelection();
+    const edgeHit = hitEdge(p);
+    if (edgeHit) {
+      s.selectEdge(edgeHit);
+    } else {
+      s.clearSelection();
+    }
   }
 });
 
@@ -250,41 +255,65 @@ function render() {
   // edges (rope) with live tension
   const nodeById = new Map(s.doc.nodes.map((n) => [n.id, n]));
   // draw rope paths as polylines
-  ctx.strokeStyle = '#9ecbff';
-  ctx.lineWidth = 2.5;
-  ctx.lineCap = 'round';
-  for (const path of s.doc.paths) {
-    ctx.beginPath();
-    let started = false;
-    for (const pn of path) {
-      const nn = nodeById.get(pn.nodeId);
-      if (!nn) continue;
-      const sp = w2s(nn.position);
-      if (!started) { ctx.moveTo(sp.x, sp.y); started = true; } else ctx.lineTo(sp.x, sp.y);
-    }
-    ctx.stroke();
-  }
-  // edges not part of any path
-  const inPath = new Set(s.doc.paths.flat().map((p) => p.nodeId));
-  ctx.strokeStyle = 'rgba(158,203,255,0.4)';
-  ctx.setLineDash([4, 4]);
-  ctx.beginPath();
-  for (const edge of s.doc.edges) {
+  // Edges (ropes) drawn individually so each can have its own colour.
+  // Edges inside an explicit path get the path's rope colour or the edge's
+  // own colour; edges not in any path are dashed.
+  const inPath = new Set<string>();
+  for (const path of s.doc.paths) for (const pn of path) inPath.add(pn.nodeId);
+
+  const drawEdge = (edge: typeof s.doc.edges[0], dashed: boolean, selected: boolean) => {
     const na = nodeById.get(edge.a);
     const nb = nodeById.get(edge.b);
-    if (!na || !nb) continue;
-    if (inPath.has(edge.a) && inPath.has(edge.b)) continue;
+    if (!na || !nb) return;
     const a = w2s(na.position), b = w2s(nb.position);
-    ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y);
+    const col = edge.color ?? '#9ecbff';
+    ctx.strokeStyle = col;
+    ctx.lineWidth = selected ? 5 : 2.5;
+    ctx.lineCap = 'round';
+    if (dashed) ctx.setLineDash([5, 4]);
+    if (selected) {
+      // selection halo
+      ctx.strokeStyle = 'rgba(255,255,255,0.7)';
+      ctx.lineWidth = 7;
+      ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); ctx.stroke();
+      ctx.strokeStyle = col;
+      ctx.lineWidth = 3.5;
+    }
+    ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); ctx.stroke();
+    ctx.setLineDash([]);
+  };
+
+  for (const edge of s.doc.edges) {
+    const inPathBoth = inPath.has(edge.a) && inPath.has(edge.b);
+    drawEdge(edge, !inPathBoth, edge.id === s.selectedEdge);
   }
-  ctx.stroke();
-  ctx.setLineDash([]);
 
   // nodes
   const nodeForce = new Map((result?.nodes ?? []).map((nf) => [nf.nodeId, nf]));
   for (const n of s.doc.nodes) {
     drawNode(n, s.selection === n.id, nodeForce.get(n.id)?.status ?? 'OK');
   }
+  // Visio-style selection handles on the selected node.
+  if (s.selection) {
+    const sn = nodeById.get(s.selection);
+    if (sn) {
+      const sp = w2s(sn.position);
+      const st = NODE_STYLE[sn.kind] ?? { r: 9 };
+      const hs = st.r + 8; // handle spread
+      ctx.strokeStyle = '#58a6ff';
+      ctx.fillStyle = '#58a6ff';
+      ctx.lineWidth = 1.5;
+      const pts = [
+        { x: sp.x - hs, y: sp.y - hs }, { x: sp.x + hs, y: sp.y - hs },
+        { x: sp.x - hs, y: sp.y },     { x: sp.x + hs, y: sp.y },
+        { x: sp.x - hs, y: sp.y + hs }, { x: sp.x + hs, y: sp.y + hs },
+      ];
+      // bounding square
+      ctx.strokeRect(sp.x - hs, sp.y - hs, hs * 2, hs * 2);
+      for (const pt of pts) { ctx.fillRect(pt.x - 2, pt.y - 2, 4, 4); }
+    }
+  }
+
   // Highlight the pending connect-from endpoint.
   if (s.connectFrom) {
     const cn = nodeById.get(s.connectFrom);
@@ -352,9 +381,103 @@ function render() {
   }
 }
 
+// ---- properties panel (Visio-style) -------------------------------------
+const ROPESWATCHES = ['#58a6ff', '#3fb950', '#d29922', '#f85149', '#a371f7', '#39c5cf', '#e3b341', '#ffffff'];
+
+let propsSig = ''; // last-rendered selection signature to avoid rebuilding on focus
+
+function renderProps() {
+  const s = store.getState();
+  const propsBody = document.getElementById('props-body') as HTMLDivElement;
+  const sig = `${s.selection}|${s.selectedEdge ?? ''}|${s.tool}|${s.doc.nodes.length}|${s.doc.edges.length}|${s.result?.nodes.map((n)=>n.status).join('') ?? ''}`;
+  if (sig === propsSig) return;
+  propsSig = sig;
+
+  // ---- connector selected ----
+  if (s.selectedEdge) {
+    const edge = s.doc.edges.find((e) => e.id === s.selectedEdge);
+    if (edge) {
+      const byId = new Map(s.doc.nodes.map((n) => [n.id, n]));
+      const a = byId.get(edge.a), b = byId.get(edge.b);
+      const swatches = ROPESWATCHES.map(
+        (c) => `<button class="props-swatch" data-color="${c}" title="${c}" style="background:${c}"></button>`,
+      ).join('');
+      propsBody.innerHTML = `
+        <div class="props-row"><label>Connector (rope)</label></div>
+        <div class="props-row"><label>Colour</label>
+          <span class="props-color"><input type="color" id="clr" value="${edge.color ?? '#9ecbff'}"></span></div>
+        <div class="props-swatches">${swatches}</div>
+        <div class="props-kv"><span>From</span><b>${a?.label ?? edge.a}</b></div>
+        <div class="props-kv"><span>To</span><b>${b?.label ?? edge.b}</b></div>
+        <div class="props-hint">Rope colour shows load sharing — give each rope a different colour.</div>`;
+      const clr = propsBody.querySelector('#clr') as HTMLInputElement;
+      clr?.addEventListener('input', () => s.setEdgeColor(edge.id, clr.value));
+      propsBody.querySelectorAll('.props-swatch').forEach((el) =>
+        el.addEventListener('click', () => s.setEdgeColor(edge.id, (el as HTMLElement).dataset.color!)));
+      return;
+    }
+    s.selectEdge(null);
+    return;
+  }
+
+  // ---- node selected ----
+  if (s.selection) {
+    const node = s.doc.nodes.find((n) => n.id === s.selection);
+    if (!node) { propsBody.innerHTML = '<div class="props-empty">Nothing selected.</div>'; return; }
+    const spec = node.spec;
+    const fmt = (v: number | undefined, d = ''): string => (v ?? d) as string;
+    const fields: string[] = [];
+    fields.push(labelField(node.label ?? node.kind, node.kind));
+    if (node.kind === 'LOAD') {
+      fields.push(numField('Weight (kN)', 'load', fmt(spec.load)));
+      fields.push(numField('Safety factor', 'safetyFactor', fmt(spec.safetyFactor)));
+    } else {
+      if (node.kind !== 'ANCHOR' && node.kind !== 'TERMINAL') {
+        fields.push(numField('Friction μ', 'friction', fmt(spec.friction)));
+        fields.push(numField('Contact angle °', 'wrapDeg', spec.wrapAngle != null ? String((spec.wrapAngle * 180) / Math.PI) : ''));
+      }
+      fields.push(numField('Breaking (kN)', 'breakingStrength', fmt(spec.breakingStrength)));
+      fields.push(numField('Safety factor', 'safetyFactor', fmt(spec.safetyFactor, '5')));
+      if (spec.weight) fields.push(numField('Weight (kN)', 'weight', fmt(spec.weight)));
+    }
+    propsBody.innerHTML = `
+      <div class="props-row"><label>${node.kind}</label></div>
+      ${fields.join('')}
+      <div class="props-hint">Forces recompute as you type. Verify ratings against the manufacturer.</div>`;
+
+    const lbl = propsBody.querySelector('#lbl') as HTMLInputElement;
+    lbl?.addEventListener('change', () => s.updateNode(node.id, {}, lbl.value));
+    const map = {
+      load: 'load', safetyFactor: 'safetyFactor', friction: 'friction',
+      wrapDeg: 'wrapAngle', breakingStrength: 'breakingStrength', weight: 'weight',
+    } as const;
+    (['load', 'safetyFactor', 'friction', 'wrapDeg', 'breakingStrength', 'weight'] as const).forEach((k) => {
+      const el = propsBody.querySelector(`#${k}`) as HTMLInputElement;
+      if (!el) return;
+      el.addEventListener('change', () => {
+        const v = Number(el.value);
+        if (Number.isNaN(v)) return;
+        if (map[k] === 'wrapAngle') { s.updateNode(node.id, { [map[k]]: (v * Math.PI) / 180 }); return; }
+        s.updateNode(node.id, { [map[k]]: v });
+      });
+    });
+    return;
+  }
+
+  propsBody.innerHTML = '<div class="props-empty">Select a node or rope to edit it.<br/><span class="props-hint">Nodes: drag to move, <b>Del</b> to remove. Ropes: click to recolour.</span></div>';
+}
+
+function labelField(value: string, kind: string): string {
+  return `<div class="props-row"><label>Label</label><input type="text" id="lbl" value="${value.replace(/"/g, '&quot;')}" datatype="${kind}"></div>`;
+}
+function numField(label: string, id: string, value: string): string {
+  return `<div class="props-row"><label>${label}</label><input type="number" id="${id}" value="${value}" step="any"></div>`;
+}
+
 // animation loop
 function loop() {
   render();
+  renderProps();
   requestAnimationFrame(loop);
 }
 loop();

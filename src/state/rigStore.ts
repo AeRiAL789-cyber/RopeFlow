@@ -5,7 +5,7 @@
 // discipline (typed, single source of truth) but for a force-carrying graph.
 
 import { create } from 'zustand';
-import type { RigDocument, Point2, NodeKind, RigEdge } from '../model/types';
+import type { RigDocument, Point2, NodeKind, RigEdge, NodeSpec } from '../model/types';
 import { createEmptyRig, genId, makeNode } from '../model/types';
 import { solveRig, type SolveResult } from '../engine/solver';
 import { DEFAULT_SAFETY_FACTOR } from '../gear/catalog';
@@ -23,7 +23,10 @@ export type Tool =
 interface RigState {
   doc: RigDocument;
   tool: Tool;
+  /** Selected NODE id (edges use selectedEdge). */
   selection: string | null;
+  /** Selected CONNECTOR (rope) id. */
+  selectedEdge: string | null;
   /** Node currently being dragged. */
   grabNodeId: string | null;
   /** First node chosen in CONNECT mode (roped to the second click). */
@@ -32,6 +35,11 @@ interface RigState {
 
   setTool: (t: Tool) => void;
   select: (id: string | null) => void;
+  selectEdge: (id: string | null) => void;
+  /** Edit a node's spec + optional label. */
+  updateNode: (id: string, patch: Partial<NodeSpec>, label?: string) => void;
+  /** Recolour a connector (rope). */
+  setEdgeColor: (id: string, color: string) => void;
   placeNode: (kind: NodeKind, pos: Point2, label?: string) => void;
   /** Insert a redirect node into an existing rope, splitting edge a→b into a→n, n→b. */
   spliceIntoEdge: (edgeId: string, kind: NodeKind, pos: Point2, label?: string) => void;
@@ -65,17 +73,41 @@ export const useRigStore = create<RigState>((set, get) => ({
   doc: createEmptyRig(),
   tool: 'SELECT',
   selection: null,
+  selectedEdge: null,
   grabNodeId: null,
   connectFrom: null,
   result: null,
 
   setTool: (tool) => set({ tool, connectFrom: null }),
 
-  select: (selection) => set({ selection }),
-  clearSelection: () => set({ selection: null }),
+  select: (selection) => set({ selection, selectedEdge: null }),
+  selectEdge: (id) => set({ selectedEdge: id, selection: null }),
+  clearSelection: () => set({ selection: null, selectedEdge: null }),
   setGrabNode: (grabNodeId) => set({ grabNodeId }),
 
-  beginConnect: (id) => set({ connectFrom: id, selection: id, tool: 'CONNECT' }),
+  updateNode: (id, patch, label) => {
+    set((s) => ({
+      doc: {
+        ...s.doc,
+        nodes: s.doc.nodes.map((n) =>
+          n.id === id
+            ? { ...n, spec: { ...n.spec, ...patch }, label: label ?? n.label }
+            : n),
+      },
+    }));
+    get().recompute();
+  },
+
+  setEdgeColor: (id, color) => {
+    set((s) => ({
+      doc: {
+        ...s.doc,
+        edges: s.doc.edges.map((e) => (e.id === id ? { ...e, color } : e)),
+      },
+    }));
+  },
+
+  beginConnect: (id) => set({ connectFrom: id, selection: id, selectedEdge: null, tool: 'CONNECT' }),
 
   placeNode: (kind, pos, label) => {
     const n = makeNode(kind, pos, makeDefaultSpec(kind), label ?? kind.toUpperCase());
@@ -147,15 +179,16 @@ export const useRigStore = create<RigState>((set, get) => ({
 
   deleteSelected: () =>
     set((s) => {
-      const sel = s.selection;
+      const sel = s.selection || s.selectedEdge;
       if (!sel) return s;
       return {
         doc: {
           ...s.doc,
           nodes: s.doc.nodes.filter((n) => n.id !== sel),
-          edges: s.doc.edges.filter((e) => e.a !== sel && e.b !== sel),
+          edges: s.doc.edges.filter((e) => e.id !== sel && e.a !== sel && e.b !== sel),
         },
         selection: null,
+        selectedEdge: null,
         connectFrom: null,
       };
     }),
@@ -183,14 +216,15 @@ export const useRigStore = create<RigState>((set, get) => ({
     // Two anchors share the load: anchor1->edge->load and anchor2->load,
     // plus a control leg to the belay device.
     const edges: RigEdge[] = [
-      { id: genId('e'), a: anchor1.id, b: edge.id },
-      { id: genId('e'), a: edge.id, b: load.id },
-      { id: genId('e'), a: anchor2.id, b: load.id },
-      { id: genId('e'), a: edge.id, b: belay.id },
+      { id: genId('e'), a: anchor1.id, b: edge.id, color: '#58a6ff' },
+      { id: genId('e'), a: edge.id, b: load.id, color: '#58a6ff' },
+      { id: genId('e'), a: anchor2.id, b: load.id, color: '#3fb950' },
+      { id: genId('e'), a: edge.id, b: belay.id, color: '#d29922' },
     ];
     set({
       doc: { version: '0.1', units: 'kN', nodes: n, edges, paths: [] },
       selection: load.id,
+      selectedEdge: null,
       tool: 'SELECT',
       connectFrom: null,
     });

@@ -55,6 +55,8 @@ export interface RigEdge {
   b: string;
   /** Rope breaking strength, kN (for the whole length). */
   breakingStrength?: number;
+  /** Connector (rope) colour, hex. Defaults to the renderer's rope colour when unset. */
+  color?: string;
 }
 
 /** Optional ordered rope path: an explicit sequence of node ids a single rope travels. */
