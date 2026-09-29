@@ -33,6 +33,8 @@ interface RigState {
   setTool: (t: Tool) => void;
   select: (id: string | null) => void;
   placeNode: (kind: NodeKind, pos: Point2, label?: string) => void;
+  /** Insert a redirect node into an existing rope, splitting edge a→b into a→n, n→b. */
+  spliceIntoEdge: (edgeId: string, kind: NodeKind, pos: Point2, label?: string) => void;
   moveNode: (id: string, pos: Point2) => void;
   setGrabNode: (id: string | null) => void;
   /** CONNECT-mode: set the first endpoint. */
@@ -84,6 +86,28 @@ export const useRigStore = create<RigState>((set, get) => ({
       // dropped in a row (e.g. multiple pulleys). Switch by picking a
       // different tool or SELECT.
     }));
+    get().recompute();
+  },
+
+  spliceIntoEdge: (edgeId, kind, pos, label) => {
+    const s = get();
+    const edge = s.doc.edges.find((e) => e.id === edgeId);
+    if (!edge) return;
+    const n = makeNode(kind, pos, makeDefaultSpec(kind), label ?? kind.toUpperCase());
+    // Replace the original single edge with two: a→n and n→b. The new redirect
+    // now has a rope in (a→n) and a rope out (n→b), as a passthrough device.
+    const edges = s.doc.edges
+      .filter((e) => e.id !== edgeId)
+      .concat([
+        { id: genId('e'), a: edge.a, b: n.id },
+        { id: genId('e'), a: n.id, b: edge.b },
+      ]);
+    set({
+      doc: { ...s.doc, nodes: [...s.doc.nodes, n], edges },
+      selection: n.id,
+      tool: 'SELECT',
+      connectFrom: null,
+    });
     get().recompute();
   },
 

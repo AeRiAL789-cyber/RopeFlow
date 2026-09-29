@@ -96,6 +96,37 @@ function hitTest(p: { x: number; y: number }): string | null {
   return best;
 }
 
+/** Distance from point p (screen) to segment ab (screen coords), px. */
+function distToSegment(px: number, py: number, ax: number, ay: number, bx: number, by: number): number {
+  const dx = bx - ax, dy = by - ay;
+  const l2 = dx * dx + dy * dy;
+  if (l2 < 1e-6) return Math.hypot(px - ax, py - ay);
+  let t = ((px - ax) * dx + (py - ay) * dy) / l2;
+  t = Math.max(0, Math.min(1, t));
+  return Math.hypot(px - (ax + t * dx), py - (ay + t * dy));
+}
+
+/** Hit-test a rope: return the edge id whose segment is within tolerance of p. */
+function hitEdge(p: { x: number; y: number }): string | null {
+  const s = store.getState();
+  const TOL = 12;
+  const nodeById = new Map(s.doc.nodes.map((n) => [n.id, n]));
+  let best: string | null = null;
+  let bestD = Infinity;
+  for (const e of s.doc.edges) {
+    const a = nodeById.get(e.a);
+    const b = nodeById.get(e.b);
+    if (!a || !b) continue;
+    const sa = w2s(a.position), sb = w2s(b.position);
+    const d = distToSegment(p.x, p.y, sa.x, sa.y, sb.x, sb.y);
+    if (d < TOL && d < bestD) { bestD = d; best = e.id; }
+  }
+  return best;
+}
+
+/** Redirect / passthrough node kinds: these make sense spliced into a rope. */
+const REDIRECT_KINDS = new Set(['PULLEY', 'CARABINER', 'BELAY', 'EDGE']);
+
 canvas.addEventListener('pointerdown', (e) => {
   const p = { x: e.clientX, y: e.clientY };
   const s = store.getState();
@@ -103,6 +134,12 @@ canvas.addEventListener('pointerdown', (e) => {
   // ADD_* tools: drop a standalone node here (can drop several in a row).
   if (s.tool.startsWith('ADD_')) {
     const kind = s.tool.replace('ADD_', '') as never;
+    if (REDIRECT_KINDS.has(kind)) {
+      // Redirect device: if dropped on a rope, splice it in (rope-in/rope-out);
+      // otherwise place it standalone.
+      const edgeId = hitEdge(p);
+      if (edgeId) { s.spliceIntoEdge(edgeId, kind, s2w(p)); return; }
+    }
     s.placeNode(kind, s2w(p));
     return;
   }

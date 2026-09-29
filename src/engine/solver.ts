@@ -72,6 +72,63 @@ export function capstanRatio(mu: number, theta: number): number {
 }
 
 /**
+ * Compute the rope contact (wrap) angle at each node, purely from geometry.
+ *
+ * At a redirecting node (pulley / carabiner / belay / edge) the rope enters
+ * along one leg and leaves along another; the contact angle on the sheave is
+ * the included angle between the two incident legs. We take the MOST-deflected
+ * pair (max included angle), which is the conservative choice — more wrap =
+ * more friction = a higher, safer tension for the operator. A node with a
+ * single incident leg falls back to no geometry (0), letting the gear's own
+ * spec.wrapAngle provide a value where relevant.
+ *
+ * Same geometry that feeds the 120° critical-angle rule — one source of
+ * truth for the rig's angles.
+ */
+function computeContactAngles(paths: string[][], posOf: Map<string, { x: number; y: number }>): Map<string, number> {
+  // For each node, collect its in/out neighbours from the rope paths
+  // (a node mid-path has exactly two rope neighbours — the rope-in and
+  // rope-out legs). Fall back to 0 when it can't be determined.
+  const neighbours = new Map<string, string[]>();
+  const addN = (a: string, b: string) => {
+    if (a === b) return;
+    if (!neighbours.has(a)) neighbours.set(a, []);
+    if (!neighbours.has(b)) neighbours.set(b, []);
+    neighbours.get(a)!.push(b);
+    neighbours.get(b)!.push(a);
+  };
+  for (const path of paths) {
+    for (let i = 0; i < path.length - 1; i++) addN(path[i], path[i + 1]);
+  }
+  const out = new Map<string, number>();
+  for (const [id, nb] of neighbours) {
+    if (nb.length < 2) { out.set(id, 0); continue; }
+    const p = posOf.get(id);
+    if (!p) { out.set(id, 0); continue; }
+    const dirs = nb.map((nx) => {
+      const q = posOf.get(nx);
+      return { x: (q?.x ?? 0) - p.x, y: (q?.y ?? 0) - p.y };
+    });
+    let maxAngle = 0;
+    for (let i = 0; i < dirs.length; i++) {
+      for (let j = i + 1; j < dirs.length; j++) {
+        const a = dirs[i], b = dirs[j];
+        const la = Math.hypot(a.x, a.y), lb = Math.hypot(b.x, b.y);
+        if (la < 1e-9 || lb < 1e-9) continue;
+        const cosT = Math.max(-1, Math.min(1, (a.x * b.x + a.y * b.y) / (la * lb)));
+        // Included angle between the two leg directions = the rope's contact
+        // (wrap) angle on the sheave. Antiparallel legs (a rope doubling back
+        // for a hard U-turn) give π — the full half-wrap.
+        const angle = Math.acos(cosT);
+        if (angle > maxAngle) maxAngle = angle;
+      }
+    }
+    out.set(id, maxAngle);
+  }
+  return out;
+}
+
+/**
  * Propagate tension along a single rope path, walking in the specified
  * direction (true = index ascending toward the haul end, starting from the
  * load). Returns the tension at every contact node plus the final haul force.
@@ -81,6 +138,7 @@ function propagatePath(
   pathIds: string[],
   knownTension: number,
   ascend: boolean,
+  contactAngles: Map<string, number>,
 ): { tensions: Map<string, number>; haulForce: number } {
   const nodes = new Map(rig.nodes.map((n) => [n.id, n]));
   const tensions = new Map<string, number>();
@@ -95,9 +153,10 @@ function propagatePath(
     // Crossing a redirecting node: tension multiplies by the capstan ratio,
     // always growing in the direction the rope tightens (the haul side). For a
     // static worst-case bound we grow tension through friction nodes regardless
-    // of raising/lowering direction.
+    // of raising/lowering direction. The contact angle comes from geometry
+    // when available, else the gear's own wrapAngle.
     const mu = node.spec.friction ?? 0;
-    const theta = node.spec.wrapAngle ?? 0;
+    const theta = contactAngles.get(id) ?? node.spec.wrapAngle ?? 0;
     t = t * Math.max(1, capstanRatio(mu, theta));
   }
   return { tensions, haulForce: t };
@@ -193,6 +252,11 @@ export function solveRig(rig: RigDocument): SolveResult {
     // tension propagates correctly through multi-anchor / multi-pulley rigs.
     : derivePathsFromEdges(rig);
 
+  // Geometric contact angles (wrap) per node, from the rope paths — drives
+  // capstan friction so the physics follows the drawing, not a hardcoded value.
+  const posOf = new Map(rig.nodes.map((n) => [n.id, n.position]));
+  const contactAngles = computeContactAngles(paths, posOf);
+
   paths.forEach((pathIds, pathIndex) => {
     const segs: SegmentForce[] = [];
     // Determine start tension: prefer a LOAD node in this path; else the rope
@@ -208,9 +272,9 @@ export function solveRig(rig: RigDocument): SolveResult {
       const startTension = nodeLoad(loadNode) + (loadNode.spec.weight ?? 0);
       // Direction: if the load sits mid-path, propagate toward both ends.
       const li = pathIds.indexOf(loadNodeId);
-      const tensionsAsc = propagatePath(rig, pathIds, startTension, true);
+      const tensionsAsc = propagatePath(rig, pathIds, startTension, true, contactAngles);
       const tensionsDesc =
-        li > 0 ? propagatePath(rig, pathIds, startTension, false) : tensionsAsc;
+        li > 0 ? propagatePath(rig, pathIds, startTension, false, contactAngles) : tensionsAsc;
 
       for (let s = 0; s < pathIds.length - 1; s++) {
         const a = pathIds[s];
