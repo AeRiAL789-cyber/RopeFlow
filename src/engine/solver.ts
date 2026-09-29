@@ -109,6 +109,62 @@ function nodeLoad(node: RigNode): number {
 }
 
 /**
+ * Derive ordered rope paths from the edge graph when explicit `paths` are
+ * absent. For a connected rig, physics only makes sense when a rope's tension
+ * propagates from the load outward — so we grow a path from every LOAD node to
+ * each reachable anchor/leaf, producing full chains (e.g. anchor→pulley→load)
+ * rather than isolated two-node edges. Handles multi-anchor hangs (a load
+ * reached from several anchors) and multi-pulley chains.
+ */
+function derivePathsFromEdges(rig: RigDocument): string[][] {
+  const adj = new Map<string, string[]>();
+  for (const n of rig.nodes) adj.set(n.id, []);
+  for (const e of rig.edges) {
+    adj.get(e.a)?.push(e.b);
+    adj.get(e.b)?.push(e.a);
+  }
+  const kind = new Map(rig.nodes.map((n) => [n.id, n.kind]));
+  const paths: string[][] = [];
+
+  // Grow a chain from `start` toward `from` (already visited tail), stopping
+  // at an anchor/terminal leaf or a dead-end. Backtrack-free single walk.
+  const growToLeaf = (start: string, from: string, visited: Set<string>): string[] => {
+    const chain = [start];
+    const seen = new Set(visited);
+    seen.add(start);
+    let cur = start;
+    let prev = from;
+    while (true) {
+      const neighbours = (adj.get(cur) ?? []).filter((nx) => nx !== prev && !seen.has(nx));
+      if (neighbours.length === 0) break;
+      // Prefer the first anchor/leaf; otherwise take the first onward step.
+      const target = neighbours.find((nx) => kind.get(nx) === 'ANCHOR' || kind.get(nx) === 'TERMINAL') ?? neighbours[0];
+      seen.add(target);
+      chain.push(target);
+      prev = cur;
+      cur = target;
+      if (kind.get(cur) === 'ANCHOR' || kind.get(cur) === 'TERMINAL') break;
+    }
+    return chain;
+  };
+
+  for (const loadNode of rig.nodes) {
+    if (loadNode.kind !== 'LOAD') continue;
+    const visited = new Set([loadNode.id]);
+    const branches = (adj.get(loadNode.id) ?? []).filter((nx) => kind.get(nx) !== 'LOAD');
+    for (const branch of branches) {
+      // Walk from the load outward along this branch to its leaf/anchor.
+      const out = growToLeaf(branch, loadNode.id, visited);
+      // Path is load -> branch -> ... -> leaf (reverse so load is first and
+      // the solver's "ascending from load" propagation is natural).
+      const path = [loadNode.id, ...out];
+      paths.push(path);
+    }
+  }
+  return paths;
+}
+
+/**
  * Solve a rig document for forces.
  *
  * Strategy per ordered `paths` entry:
@@ -133,8 +189,9 @@ export function solveRig(rig: RigDocument): SolveResult {
 
   const paths = rig.paths.length
     ? rig.paths.map((p) => p.map((pn) => pn.nodeId))
-    // No explicit paths: treat each edge as an isolated two-node rope.
-    : rig.edges.map((e) => [e.a, e.b]);
+    // No explicit paths: derive full chains from the edge graph so a load's
+    // tension propagates correctly through multi-anchor / multi-pulley rigs.
+    : derivePathsFromEdges(rig);
 
   paths.forEach((pathIds, pathIndex) => {
     const segs: SegmentForce[] = [];

@@ -97,6 +97,58 @@ describe('critical angle rule (120°)', () => {
   });
 });
 
+describe('derived paths (no explicit paths in the doc)', () => {
+  it('splits a load between two anchors when paths are derived from edges', () => {
+    // Multi-anchor V-hang: load hangs from TWO anchors via two independent
+    // derived paths. No explicit `paths` field (as from the canvas).
+    const a1 = makeNode('ANCHOR', { x: -3, y: 3 }, { breakingStrength: 150, safetyFactor: 5 });
+    const a2 = makeNode('ANCHOR', { x: 3, y: 3 }, { breakingStrength: 150, safetyFactor: 5 });
+    const load = makeNode('LOAD', { x: 0, y: 0 }, { load: 4, safetyFactor: 10 });
+
+    const rig = createEmptyRig();
+    rig.nodes = [a1, a2, load];
+    rig.edges = [
+      { id: 'e1', a: a1.id, b: load.id },
+      { id: 'e2', a: a2.id, b: load.id },
+    ];
+    rig.paths = []; // solver must derive
+
+    const res = solveRig(rig);
+    // Both anchors carry the full load (each derived path starts at the load).
+    const f1 = res.nodes.find((n) => n.nodeId === a1.id)!;
+    const f2 = res.nodes.find((n) => n.nodeId === a2.id)!;
+    close(f1.reaction!, 4);
+    close(f2.reaction!, 4);
+    // At least two paths were derived.
+    expect(Object.keys(res.segments).length).toBe(2);
+  });
+
+  it('propagates tension through a multi-pulley chain (anchor→pulley→pulley→load)', () => {
+    const anchor = makeNode('ANCHOR', { x: 0, y: 6 }, { breakingStrength: 150, safetyFactor: 5 });
+    const p1 = makeNode('PULLEY', { x: 0, y: 4 }, { friction: 0, wrapAngle: Math.PI, breakingStrength: 36, safetyFactor: 5 });
+    const p2 = makeNode('PULLEY', { x: 0, y: 2 }, { friction: 0, wrapAngle: Math.PI, breakingStrength: 36, safetyFactor: 5 });
+    const load = makeNode('LOAD', { x: 0, y: 0 }, { load: 3, safetyFactor: 10 });
+
+    const rig = createEmptyRig();
+    rig.nodes = [anchor, p1, p2, load];
+    rig.edges = [
+      { id: 'e1', a: anchor.id, b: p1.id },
+      { id: 'e2', a: p1.id, b: p2.id },
+      { id: 'e3', a: p2.id, b: load.id },
+    ];
+    rig.paths = [];
+
+    const res = solveRig(rig);
+    // One derived path anchor→p1→p2→load. Frictionless so every segment
+    // carries the load weight 3 kN, and the anchor reacts 3 kN.
+    const fAnchor = res.nodes.find((n) => n.nodeId === anchor.id)!;
+    close(fAnchor.reaction!, 3);
+    // The load side segment must be at the load weight.
+    const segs = Object.values(res.segments)[0];
+    close(segs[segs.length - 1].tension, 3);
+  });
+});
+
 describe('overload detection', () => {
   it('flags OVERLOAD when a gear rating is exceeded (off-axis redirect)', () => {
     // Anchor top, load below, redirecting pulley offset to the right so it

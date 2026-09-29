@@ -43,22 +43,42 @@ const TOOLS = [
   ['btn-add-carabiner', 'ADD_CARABINER'],
   ['btn-add-belay', 'ADD_BELAY'],
   ['btn-add-load', 'ADD_LOAD'],
+  ['btn-add-edge', 'ADD_EDGE'],
+  ['btn-connect', 'CONNECT'],
 ] as const;
+
+function deactivateToolbar() {
+  TOOLS.forEach(([id]) => (document.getElementById(id) as HTMLButtonElement).classList.remove('active'));
+}
 
 TOOLS.forEach(([id, tool]) => {
   const btn = document.getElementById(id) as HTMLButtonElement;
   btn.addEventListener('click', () => {
-    store.getState().setTool(tool as never);
+    deactivateToolbar();
     btn.classList.add('active');
-    TOOLS.forEach(([oid]) => {
-      if (oid !== id) (document.getElementById(oid) as HTMLButtonElement).classList.remove('active');
-    });
+    store.getState().setTool(tool as never);
   });
 });
 
 document.getElementById('btn-run')!.addEventListener('click', () => store.getState().recompute());
-document.getElementById('btn-demo')!.addEventListener('click', () => store.getState().loadDemo());
+document.getElementById('btn-demo')!.addEventListener('click', () => {
+  deactivateToolbar();
+  store.getState().setTool('SELECT');
+  store.getState().loadDemo();
+});
 store.getState().loadDemo(); // start with a demo rig on screen
+
+// Delete key removes the selected node (and its attached edges).
+window.addEventListener('keydown', (e) => {
+  if ((e.key === 'Delete' || e.key === 'Backspace') && store.getState().selection) {
+    e.preventDefault();
+    store.getState().deleteSelected();
+  }
+  if (e.key === 'Escape') {
+    store.getState().setTool('SELECT');
+    deactivateToolbar();
+  }
+});
 
 // ---- pointer interaction -------------------------------------------------
 let dragging: string | null = null;
@@ -79,14 +99,34 @@ function hitTest(p: { x: number; y: number }): string | null {
 canvas.addEventListener('pointerdown', (e) => {
   const p = { x: e.clientX, y: e.clientY };
   const s = store.getState();
-  if (s.tool !== 'SELECT') {
-    const pos = s2w(p);
+
+  // ADD_* tools: drop a standalone node here (can drop several in a row).
+  if (s.tool.startsWith('ADD_')) {
     const kind = s.tool.replace('ADD_', '') as never;
-    s.placeNode(kind, pos);
-    s.setTool('SELECT');
-    TOOLS.forEach(([id]) => (document.getElementById(id) as HTMLButtonElement).classList.remove('active'));
+    s.placeNode(kind, s2w(p));
     return;
   }
+
+  // CONNECT tool: pick first node, then second node to rope them together.
+  if (s.tool === 'CONNECT') {
+    const hit = hitTest(p);
+    if (hit) {
+      if (s.connectFrom) {
+        s.connectNodes(hit);
+        deactivateToolbar();
+      } else {
+        s.beginConnect(hit);
+      }
+    } else if (s.connectFrom) {
+      // Clicking empty space cancels a pending connect.
+      s.setTool('SELECT');
+      s.select(null);
+      deactivateToolbar();
+    }
+    return;
+  }
+
+  // SELECT tool: drag a node, otherwise draft a connector between two nodes.
   const hit = hitTest(p);
   if (hit) {
     dragging = hit;
@@ -207,6 +247,44 @@ function render() {
   const nodeForce = new Map((result?.nodes ?? []).map((nf) => [nf.nodeId, nf]));
   for (const n of s.doc.nodes) {
     drawNode(n, s.selection === n.id, nodeForce.get(n.id)?.status ?? 'OK');
+  }
+  // Highlight the pending connect-from endpoint.
+  if (s.connectFrom) {
+    const cn = nodeById.get(s.connectFrom);
+    if (cn) {
+      const sp = w2s(cn.position);
+      ctx.strokeStyle = '#39c5cf';
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.arc(sp.x, sp.y, 20, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.fillStyle = '#39c5cf';
+      ctx.font = 'bold 12px system-ui';
+      ctx.textAlign = 'center';
+      ctx.fillText('→ choose a node to rope', sp.x, sp.y - 26);
+    }
+  }
+
+  // Per-edge tension labels.
+  ctx.fillStyle = '#8b949e';
+  ctx.font = '9px system-ui';
+  ctx.textAlign = 'center';
+  if (result) {
+    // Show each edge's live tension: the lower of the two endpoint resultants
+    // (a shared segment carries the same tension through to its weaker end).
+    for (const edge of s.doc.edges) {
+      const fa = nodeForce.get(edge.a);
+      const fb = nodeForce.get(edge.b);
+      if (!fa || !fb) continue;
+      const na = nodeById.get(edge.a);
+      const nb = nodeById.get(edge.b);
+      if (!na || !nb) continue;
+      const a = w2s(na.position), b = w2s(nb.position);
+      const t = Math.min(fa.resultant, fb.resultant);
+      if (t < 1e-9) continue;
+      const mx = (a.x + b.x) / 2, my = (a.y + b.y) / 2;
+      ctx.fillText(`${t.toFixed(2)} kN`, mx, my - 5);
+    }
   }
 
   // HUD: stats

@@ -5,12 +5,20 @@
 // discipline (typed, single source of truth) but for a force-carrying graph.
 
 import { create } from 'zustand';
-import type { RigDocument, RigNode, Point2, NodeKind, RigEdge } from '../model/types';
+import type { RigDocument, Point2, NodeKind, RigEdge } from '../model/types';
 import { createEmptyRig, genId, makeNode } from '../model/types';
 import { solveRig, type SolveResult } from '../engine/solver';
 import { DEFAULT_SAFETY_FACTOR } from '../gear/catalog';
 
-export type Tool = 'SELECT' | 'ADD_ANCHOR' | 'ADD_PULLEY' | 'ADD_CARABINER' | 'ADD_BELAY' | 'ADD_LOAD' | 'ADD_EDGE';
+export type Tool =
+  | 'SELECT'
+  | 'ADD_ANCHOR'
+  | 'ADD_PULLEY'
+  | 'ADD_CARABINER'
+  | 'ADD_BELAY'
+  | 'ADD_LOAD'
+  | 'ADD_EDGE'
+  | 'CONNECT';
 
 interface RigState {
   doc: RigDocument;
@@ -18,17 +26,21 @@ interface RigState {
   selection: string | null;
   /** Node currently being dragged. */
   grabNodeId: string | null;
-  /** Last connected node id (for auto-wire on placement). */
-  lastNodeId: string | null;
+  /** First node chosen in CONNECT mode (roped to the second click). */
+  connectFrom: string | null;
   result: SolveResult | null;
 
   setTool: (t: Tool) => void;
   select: (id: string | null) => void;
   placeNode: (kind: NodeKind, pos: Point2, label?: string) => void;
-  addNode: (n: RigNode) => void;
   moveNode: (id: string, pos: Point2) => void;
   setGrabNode: (id: string | null) => void;
-  rewire: (a: string, b: string) => void;
+  /** CONNECT-mode: set the first endpoint. */
+  beginConnect: (id: string) => void;
+  /** CONNECT-mode: rope connectFrom -> b (or b -> connectFrom). */
+  connectNodes: (b: string) => void;
+  deleteSelected: () => void;
+  addEdge: (a: string, b: string) => void;
   clearSelection: () => void;
   loadDemo: () => void;
   recompute: () => void;
@@ -52,38 +64,26 @@ export const useRigStore = create<RigState>((set, get) => ({
   tool: 'SELECT',
   selection: null,
   grabNodeId: null,
-  lastNodeId: null,
+  connectFrom: null,
   result: null,
 
-  setTool: (tool) => set({ tool }),
+  setTool: (tool) => set({ tool, connectFrom: null }),
+
   select: (selection) => set({ selection }),
   clearSelection: () => set({ selection: null }),
   setGrabNode: (grabNodeId) => set({ grabNodeId }),
 
-  addNode: (n) =>
-    set((s) => ({
-      doc: { ...s.doc, nodes: [...s.doc.nodes, n] },
-      selection: n.id,
-      lastNodeId: n.id,
-    })),
+  beginConnect: (id) => set({ connectFrom: id, selection: id, tool: 'CONNECT' }),
 
   placeNode: (kind, pos, label) => {
     const n = makeNode(kind, pos, makeDefaultSpec(kind), label ?? kind.toUpperCase());
-    set((s) => {
-      const nodes = [...s.doc.nodes, n];
-      let edges = s.doc.edges;
-      // Auto-wire the new node to the previously placed node.
-      if (s.lastNodeId && s.lastNodeId !== n.id) {
-        const edgeId = genId('e');
-        edges = [...edges, { id: edgeId, a: s.lastNodeId, b: n.id }];
-      }
-      return {
-        doc: { ...s.doc, nodes, edges },
-        selection: n.id,
-        lastNodeId: n.id,
-        tool: 'SELECT',
-      };
-    });
+    set((s) => ({
+      doc: { ...s.doc, nodes: [...s.doc.nodes, n] },
+      selection: n.id,
+      // Stay in the current ADD tool so several of the same kind can be
+      // dropped in a row (e.g. multiple pulleys). Switch by picking a
+      // different tool or SELECT.
+    }));
     get().recompute();
   },
 
@@ -100,14 +100,39 @@ export const useRigStore = create<RigState>((set, get) => ({
     get().recompute();
   },
 
-  rewire: (a, b) =>
+  addEdge: (a, b) =>
     set((s) => {
+      if (a === b) return s;
       const already = s.doc.edges.some(
         (e) => (e.a === a && e.b === b) || (e.a === b && e.b === a),
       );
       if (already) return s;
+      return { doc: { ...s.doc, edges: [...s.doc.edges, { id: genId('e'), a, b }] } };
+    }),
+
+  connectNodes: (b) => {
+    const from = get().connectFrom;
+    if (!from || from === b) {
+      set({ connectFrom: null, tool: 'SELECT' });
+      return;
+    }
+    get().addEdge(from, b);
+    set({ connectFrom: null, tool: 'SELECT', selection: b });
+    get().recompute();
+  },
+
+  deleteSelected: () =>
+    set((s) => {
+      const sel = s.selection;
+      if (!sel) return s;
       return {
-        doc: { ...s.doc, edges: [...s.doc.edges, { id: genId('e'), a, b }] },
+        doc: {
+          ...s.doc,
+          nodes: s.doc.nodes.filter((n) => n.id !== sel),
+          edges: s.doc.edges.filter((e) => e.a !== sel && e.b !== sel),
+        },
+        selection: null,
+        connectFrom: null,
       };
     }),
 
@@ -122,28 +147,28 @@ export const useRigStore = create<RigState>((set, get) => ({
   },
 
   loadDemo: () => {
-    // A simple lowering rig: anchor → edge → pulley redirect → load.
-    // Coordinates are in METRES; 1 m = 40 px on screen.
-    const anchor = makeNode('ANCHOR', { x: -3, y: 2.5 }, makeDefaultSpec('ANCHOR'), 'MAIN ANCHOR');
-    const edge = makeNode('EDGE', { x: -3, y: 0.5 }, makeDefaultSpec('EDGE'), 'EDGE / BEAM');
+    // A lowering rig with TWO anchors to show multi-anchor branching:
+    // anchor1 -> edge -> load, and anchor2 -> load (a V-hang), plus a belay leg.
+    const anchor1 = makeNode('ANCHOR', { x: -3, y: 2.5 }, makeDefaultSpec('ANCHOR'), 'ANCHOR 1');
+    const anchor2 = makeNode('ANCHOR', { x: 3, y: 2.5 }, makeDefaultSpec('ANCHOR'), 'ANCHOR 2');
+    const edge = makeNode('EDGE', { x: -1.5, y: 0.5 }, makeDefaultSpec('EDGE'), 'EDGE / BEAM');
     const belay = makeNode('BELAY', { x: 2.5, y: 1 }, makeDefaultSpec('BELAY'), 'BELAY');
     const load = makeNode('LOAD', { x: 0, y: -2.5 }, makeDefaultSpec('LOAD'), 'LOAD');
-    const n = [anchor, edge, belay, load];
+    const n = [anchor1, anchor2, edge, belay, load];
 
-    // Two rope paths: anchor→edge→load (load line) and edge→belay (control line).
+    // Two anchors share the load: anchor1->edge->load and anchor2->load,
+    // plus a control leg to the belay device.
     const edges: RigEdge[] = [
-      { id: genId('e'), a: anchor.id, b: edge.id },
+      { id: genId('e'), a: anchor1.id, b: edge.id },
       { id: genId('e'), a: edge.id, b: load.id },
+      { id: genId('e'), a: anchor2.id, b: load.id },
       { id: genId('e'), a: edge.id, b: belay.id },
     ];
-    const paths = [
-      [{ nodeId: anchor.id }, { nodeId: edge.id }, { nodeId: load.id }],
-    ];
     set({
-      doc: { version: '0.1', units: 'kN', nodes: n, edges, paths },
+      doc: { version: '0.1', units: 'kN', nodes: n, edges, paths: [] },
       selection: load.id,
-      lastNodeId: load.id,
       tool: 'SELECT',
+      connectFrom: null,
     });
     get().recompute();
   },
