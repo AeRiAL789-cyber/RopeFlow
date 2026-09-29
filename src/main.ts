@@ -60,22 +60,35 @@ TOOLS.forEach(([id, tool]) => {
   });
 });
 
-document.getElementById('btn-run')!.addEventListener('click', () => store.getState().recompute());
 document.getElementById('btn-demo')!.addEventListener('click', () => {
   deactivateToolbar();
   store.getState().setTool('SELECT');
   store.getState().loadDemo();
 });
+document.getElementById('btn-undo')!.addEventListener('click', () => store.getState().undo());
+document.getElementById('btn-redo')!.addEventListener('click', () => store.getState().redo());
+document.getElementById('btn-reset')!.addEventListener('click', () => {
+  deactivateToolbar();
+  store.getState().setTool('SELECT');
+  store.getState().reset();
+});
+document.getElementById('btn-save-scene')!.addEventListener('click', () => {
+  const name = prompt('Name this milestone (rigging / rescue plan step):', `Plan ${new Date().toLocaleString().slice(0, 16)}`);
+  store.getState().saveScene(name ?? '');
+});
 store.getState().loadDemo(); // start with a demo rig on screen
 
 // Delete key removes the selected node (and its attached edges).
 window.addEventListener('keydown', (e) => {
-  if ((e.key === 'Delete' || e.key === 'Backspace') && store.getState().selection) {
+  const s = store.getState();
+  if ((e.ctrlKey || e.metaKey) && !e.shiftKey && e.key.toLowerCase() === 'z') { e.preventDefault(); s.undo(); return; }
+  if ((e.ctrlKey || e.metaKey) && (e.key.toLowerCase() === 'y' || (e.shiftKey && e.key.toLowerCase() === 'z'))) { e.preventDefault(); s.redo(); return; }
+  if ((e.key === 'Delete' || e.key === 'Backspace') && (s.selection || s.selectedEdge)) {
     e.preventDefault();
-    store.getState().deleteSelected();
+    s.deleteSelected();
   }
   if (e.key === 'Escape') {
-    store.getState().setTool('SELECT');
+    s.setTool('SELECT');
     deactivateToolbar();
   }
 });
@@ -474,10 +487,35 @@ function numField(label: string, id: string, value: string): string {
   return `<div class="props-row"><label>${label}</label><input type="number" id="${id}" value="${value}" step="any"></div>`;
 }
 
+// ---- saved milestones / scene list + undo-redo buttons -------------------
+let sceneSig = '';
+function renderScenes() {
+  const s = store.getState();
+  const list = document.getElementById('scene-list') as HTMLDivElement;
+  // undo/redo disabled states (cheap, always refresh)
+  const u = document.getElementById('btn-undo') as HTMLButtonElement;
+  const r = document.getElementById('btn-redo') as HTMLButtonElement;
+  u.disabled = !s.canUndo; r.disabled = !s.canRedo;
+  if (sceneSig === `${s.scenes.length}`) return;
+  sceneSig = `${s.scenes.length}`;
+  if (!s.scenes.length) { list.innerHTML = ''; return; }
+  list.innerHTML = '<div style="font-weight:600;margin-bottom:2px">Milestones</div>' + s.scenes.map((sc) => {
+    const when = new Date(sc.at).toLocaleString().slice(0, 16);
+    return `<div class="scene-item"><span title="${when}">${sc.name}</span><span class="when">${when}</span>` +
+      `<button class="btn" data-load="${sc.id}">Open</button>` +
+      `<button class="btn" data-del="${sc.id}">✕</button></div>`;
+  }).join('');
+  list.querySelectorAll('[data-load]').forEach((el) =>
+    el.addEventListener('click', () => store.getState().loadScene((el as HTMLElement).dataset.load!)));
+  list.querySelectorAll('[data-del]').forEach((el) =>
+    el.addEventListener('click', () => store.getState().deleteScene((el as HTMLElement).dataset.del!)));
+}
+
 // animation loop
 function loop() {
   render();
   renderProps();
+  renderScenes();
   requestAnimationFrame(loop);
 }
 loop();
